@@ -28,6 +28,7 @@
 struct Sphere {
 	ospcommon::vec3f pos;
 	int atom_type;
+	float radius;
 
 	Sphere();
 	Sphere(float x, float y, float z, int type);

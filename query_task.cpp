@@ -83,10 +83,28 @@ void QueryTask::queryThread() {
 			break;
 		}
 
+		struct ISSphere { vec3f pos; int type; };
+		// Transform the particles so we can give them radii based on the atom type
+		for (auto &r : state->regions) {
+			auto new_spheres = std::make_shared<is::OwnedArray>(sizeof(Sphere) * r.particles.array->size(),
+					sizeof(Sphere));
+
+			const ISSphere *isspheres = reinterpret_cast<const ISSphere*>(r.particles.array->data());
+			Sphere *spheres = reinterpret_cast<Sphere*>(new_spheres->data());
+			for (size_t i = 0; i < r.particles.array->size(); ++i) {
+				spheres[i].pos = isspheres[i].pos;
+				spheres[i].atom_type = isspheres[i].type;
+				spheres[i].radius = isspheres[i].type == 1 ? 1.7 : 0.8;
+			}
+			r.particles.array = new_spheres;
+		}
+
 		// TODO: We probably don't need to recompute the colormap each time,
 		// unless the sim is adding new atoms in.
 		std::array<int, 2> atom_type_range;
-		const auto colormap = colormap_atoms(state->regions, atom_type_range);
+		auto colormap = colormap_atoms(state->regions, atom_type_range);
+		colormap[0] = vec4f(5.f, 113.f, 176.f, 255.f) / 255.f;
+		colormap[1] = vec4f(202.f, 0.f, 32.f, 255.f) / 255.f;
 
 		// TODO: We need to compute the world bounds ourselves, since the LAMMPS
 		// driver doesn't send this right now
@@ -190,6 +208,8 @@ ospray::cpp::Geometry QueryTask::make_atom_geometry(const is::SimState &region,
 	geom.set("spheres", sphere_data);
 	geom.set("color", color_data);
 	geom.set("offset_colorID", int(sizeof(vec3f)));
+	geom.set("offset_radius", int(sizeof(vec3f) + sizeof(int)));
+	geom.set("bytes_per_sphere", int(sizeof(Sphere)));
 	geom.set("radius", radius);
 	geom.commit();
 	return geom;
@@ -292,7 +312,7 @@ ospray::cpp::Geometry QueryTask::make_bond_geometry(const is::SimState &region,
 
 		Geometry geom("cylinders");
 		geom.set("cylinders", cylinder_data);
-		geom.set("radius", radius * 0.5);
+		geom.set("radius", 0.3);
 		geom.set("color", cylinder_color_data);
 		geom.commit();
 		return geom;
