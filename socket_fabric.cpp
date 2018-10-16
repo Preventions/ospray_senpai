@@ -161,7 +161,7 @@ SocketFabric::~SocketFabric() {
 	close_socket(sock_fd);
 }
 
-void SocketFabric::send(void *mem, size_t s) {
+void SocketFabric::send(const void *mem, size_t s) {
 #ifndef _WIN32
 	if (write(sock_fd, mem, s) != s) {
 		throw std::runtime_error("Failed to write all bytes");

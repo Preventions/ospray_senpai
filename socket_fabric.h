@@ -33,7 +33,7 @@ public:
   SocketFabric(const SocketFabric&) = delete;
   SocketFabric& operator=(const SocketFabric&) = delete;
 
-  virtual void send(void *mem, size_t s) override;
+  virtual void send(const void *mem, size_t s) override;
   virtual size_t read(void *&mem) override;
 };
 

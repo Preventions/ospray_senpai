@@ -43,9 +43,6 @@ endif()
 
 
 if (LAMMPS_IS_RENDER_WORKER)
-	if (NOT LAMMPS_DIR)
-		message(FATAL_ERROR "You must set -DLAMMPS_DIR=<root of lammps dir>")
-	endif()
 	find_package(MPI REQUIRED)
 	find_package(libIS REQUIRED)
 	include_directories(${MPI_CXX_INCLUDE_DIRS} ${MPI_CXX_INCLUDE_PATH})
@@ -54,21 +51,9 @@ if (LAMMPS_IS_RENDER_WORKER)
 		lammps_is_render_worker.cpp
 		colormap.cpp
 		query_task.cpp)
-	#lammps_driver.cpp)
-	target_include_directories(lammps_is_render_worker PRIVATE
-		$<BUILD_INTERFACE:${LAMMPS_DIR}/src>)
 	target_link_libraries(lammps_is_render_worker PUBLIC
 		lammps_is_util
 		is_render
-		${OSPRAY_MPI_LIBRARIES}
-		${MPI_CXX_LIBRARIES}
-		${LAMMPS_DIR}/src/liblammps_mpi.so)
-
-	add_executable(test_loader_sim test_loader_sim.cpp)
-	target_include_directories(test_loader_sim PRIVATE
-		$<BUILD_INTERFACE:${MPI_CXX_INCLUDE_PATH}>)
-	target_link_libraries(test_loader_sim PUBLIC
-		is_sim
 		${OSPRAY_LIBRARIES}
 		${OSPRAY_MPI_LIBRARIES}
 		${MPI_CXX_LIBRARIES})
