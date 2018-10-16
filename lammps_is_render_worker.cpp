@@ -315,7 +315,7 @@ void run_renderer() {
 			renderer.set("ghostModel", ghost_model_data);
 			renderer.commit();
 			models_data.release();
-			ghost_models_data.release();
+			ghost_model_data.release();
 			fb.clear(OSP_FB_COLOR | OSP_FB_DEPTH | OSP_FB_ACCUM);
 			MPI_Barrier(worker_comm);
 			new_state = nullptr;
