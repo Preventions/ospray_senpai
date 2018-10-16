@@ -54,7 +54,6 @@ size_t bench_frames = 0;
 float bond_dist = 0.f;
 int bond_atom_type = -1;
 int ao_samples = 1;
-bool allow_resize = false;
 
 MPI_Comm worker_comm = MPI_COMM_NULL;
 MPI_Comm ospray_comm = MPI_COMM_NULL;
@@ -99,8 +98,6 @@ int main(int argc, char **argv) {
 			bond_dist = std::stof(args[++i]);
 		} else if (args[i] == "-ao") {
 			ao_samples = std::stoi(args[++i]);
-		} else if (args[i] == "-allow-resize") {
-			allow_resize = true;
 		}
 	}
 	if (((sim_host.empty() || sim_port == -1) && !mpi_multilaunch) || client_port == -1) {
@@ -186,6 +183,7 @@ void run_renderer() {
 	if (rank == 0 && !benchmarking) {
 		std::cout << "Now listening for client on " << hostname << ":" << client_port << std::endl;
 		client = ospcommon::make_unique<ClientConnection>(client_port);
+		std::cout << "Client connected\n" << std::flush;
 	}
 
 	// Spawn a background thread to query the sim for future timesteps
@@ -284,11 +282,7 @@ void run_renderer() {
 			app.cameraChanged = false;
 		}
 		
-		// TODO: This is buggy because if we have different numbers of
-		// regiosn on the nodes the new
-		// the framebuffer object ID will be different across nodes and we won't
-		// be able to send tiles anymore.
-		if (allow_resize && app.fbSizeChanged) {
+		if (app.fbSizeChanged) {
 			fb = FrameBuffer(app.fbSize, OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_DEPTH | OSP_FB_ACCUM);
 			fb.clear(OSP_FB_COLOR | OSP_FB_DEPTH | OSP_FB_ACCUM);
 			camera.set("aspect", static_cast<float>(app.fbSize.x) / app.fbSize.y);
@@ -296,7 +290,7 @@ void run_renderer() {
 			app.fbSizeChanged = false;
 		}
 
-		if (!new_state) {
+		if (!new_state && query_task) {
 			new_state = query_task->take();
 		}
 		int got_new_state = new_state ? 1 : 0;
@@ -305,36 +299,23 @@ void run_renderer() {
 		MPI_Allreduce(&got_new_state, &any_not_updated, 1, MPI_INT, MPI_MIN, worker_comm);
 		if (any_not_updated != 0) {
 			current_state = new_state;
-#if 1
-			std::vector<DistributedRegion> region_bounds;
-			std::vector<box3f> ghost_regions;
-			for (const auto &r : current_state->regions) {
-				region_bounds.emplace_back(make_box(r.local), r.simRank);
+			std::vector<OSPModel> model_handles;
+			std::transform(current_state->models.begin(), current_state->models.end(),
+					std::back_inserter(model_handles),
+					[](const Model &m) { return m.handle(); });
+			Data models_data(model_handles.size(), OSP_OBJECT, model_handles.data());
 
-				box3f ghost_box = make_box(r.ghost);
-				if (!ghost_box.empty()) {
-					ghost_regions.push_back(ghost_box);
-				} else {
-					// TODO: Get the actual ghost bounds, seems like there's some bug with
-					// using the region bounds?
-					//ghost_regions.push_back(region_bounds.back().bounds);
-					ghost_regions.push_back(current_state->world_bounds);
-				}
-			}
-			Data region_data(region_bounds.size() * sizeof(DistributedRegion),
-					OSP_CHAR, region_bounds.data());
+			std::vector<OSPModel> ghost_model_handles;
+			std::transform(current_state->ghost_models.begin(), current_state->ghost_models.end(),
+					std::back_inserter(ghost_model_handles),
+					[](const Model &m) { return m.handle(); });
+			Data ghost_model_data(ghost_model_handles.size(), OSP_OBJECT, ghost_model_handles.data());
 
-			current_state->model.set("regions", region_data);
-
-			if (!ghost_regions.empty()) {
-				Data ghost_region_data(ghost_regions.size() * 2,
-						OSP_FLOAT3, ghost_regions.data());
-				current_state->model.set("ghostRegions", ghost_region_data);
-			}
-#endif
-			current_state->model.commit();
-			renderer.set("model", current_state->model);
+			renderer.set("model", models_data);
+			renderer.set("ghostModel", ghost_model_data);
 			renderer.commit();
+			models_data.release();
+			ghost_models_data.release();
 			fb.clear(OSP_FB_COLOR | OSP_FB_DEPTH | OSP_FB_ACCUM);
 			MPI_Barrier(worker_comm);
 			new_state = nullptr;

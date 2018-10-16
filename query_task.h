@@ -36,8 +36,8 @@ struct Sphere {
 
 struct SimulationState {
 	std::vector<is::SimState> regions;
-	std::vector<ospray::cpp::Geometry> geometry;
-	ospray::cpp::Model model;
+	std::vector<ospray::cpp::Geometry> geom;
+	std::vector<ospray::cpp::Model> models, ghost_models;
 	ospcommon::box3f world_bounds;
 
 	SimulationState() = default;
@@ -71,11 +71,9 @@ private:
 	// Compute new colormap for the updated atom type attributes. Also re-scales so atom type min = 0
 	std::vector<ospcommon::vec4f> colormap_atoms(std::vector<is::SimState> &regions,
 			std::array<int, 2> &atom_type_range);
-	void make_atom_geometry(const std::vector<is::SimState> &regions,
-			std::vector<ospray::cpp::Geometry> &spheres,
+	ospray::cpp::Geometry make_atom_geometry(const is::SimState &region,
 			const std::vector<ospcommon::vec4f> &atom_colors);
-	void make_bond_geometry(const std::vector<is::SimState> &regions,
-			std::vector<ospray::cpp::Geometry> &cylinders,
+	ospray::cpp::Geometry make_bond_geometry(const is::SimState &region,
 			const std::vector<ospcommon::vec4f> &atom_colors,
 			const ospcommon::box3f &world_bounds,
 			const std::array<int, 2> &atom_type_range);

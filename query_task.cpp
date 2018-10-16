@@ -34,7 +34,6 @@ using namespace ospray::cpp;
 extern float radius;
 extern float bond_dist;
 extern int bond_atom_type;
-extern bool render_splatter;
 
 Sphere::Sphere() : pos(0), atom_type(0) {}
 Sphere::Sphere(float x, float y, float z, int type)
@@ -45,14 +44,14 @@ Sphere::Sphere(vec3f v, int type)
 {}
 
 SimulationState::~SimulationState() {
-	for (auto &g : geometry) {
-		if (model) {
-			model.removeGeometry(g);
-		}
-		g.release();
+	for (auto &m : models) {
+		m.release();
 	}
-	if (model) {
-		model.release();
+	for (auto &gm : ghost_models) {
+		gm.release();
+	}
+	for (auto &g : geom) {
+		g.release();
 	}
 }
 
@@ -84,29 +83,49 @@ void QueryTask::queryThread() {
 			break;
 		}
 
-		// TODO: The lammps driver doesn't currently set the world bounds
+		// TODO: We probably don't need to recompute the colormap each time,
+		// unless the sim is adding new atoms in.
+		std::array<int, 2> atom_type_range;
+		const auto colormap = colormap_atoms(state->regions, atom_type_range);
+
+		// TODO: We need to compute the world bounds ourselves, since the LAMMPS
+		// driver doesn't send this right now
 		box3f local_bounds;
 		for (const auto &r : state->regions) {
-			local_bounds.extend(vec3f(r.local.min.x, r.local.min.y, r.local.min.z));
-			local_bounds.extend(vec3f(r.local.max.x, r.local.max.y, r.local.max.z));
+			const vec3f region_lower = vec3f(r.local.min.x, r.local.min.y, r.local.min.z) - vec3f(radius); 
+			const vec3f region_upper = vec3f(r.local.max.x, r.local.max.y, r.local.max.z) + vec3f(radius);
+
+			local_bounds.extend(region_lower);
+			local_bounds.extend(region_upper);
+
+			Model model;
+			Model ghost_model;
+			model.set("id", r.simRank);
+			ghost_model.set("id", r.simRank);
+			model.set("region.lower", region_lower);
+			model.set("region.upper", region_upper);
+
+			auto atoms = make_atom_geometry(r, colormap);
+			model.addGeometry(atoms);
+			ghost_model.addGeometry(atoms);
+			atoms.release();
+			if (bond_atom_type > -1) {
+				auto bonds = make_bond_geometry(r, colormap, state->world_bounds, atom_type_range);
+				if (bonds) {
+					model.addGeometry(bonds);
+					ghost_model.addGeometry(bonds);
+					bonds.release();
+				}
+			}
+			model.commit();
+			ghost_model.commit();
+			state->models.push_back(model);
+			state->ghost_models.push_back(ghost_model);
 		}
 		MPI_Allreduce(&local_bounds.lower, &state->world_bounds.lower, 3, MPI_FLOAT, MPI_MIN,
 				query_comm);
 		MPI_Allreduce(&local_bounds.upper, &state->world_bounds.upper, 3, MPI_FLOAT, MPI_MAX,
 				query_comm);
-
-		// TODO: We probably don't need to recompute the colormap each time,
-		// unless the sim is adding new atoms in.
-		std::array<int, 2> atom_type_range;
-		const auto colormap = colormap_atoms(state->regions, atom_type_range);
-		make_atom_geometry(state->regions, state->geometry, colormap);
-		if (bond_atom_type > -1) {
-			make_bond_geometry(state->regions, state->geometry, colormap,
-					state->world_bounds, atom_type_range);
-		}
-		for (auto &g : state->geometry) {
-			state->model.addGeometry(g);
-		}
 
 		std::lock_guard<std::mutex> lock(mutex);
 		available_state = state;
@@ -155,38 +174,25 @@ std::vector<vec4f> QueryTask::colormap_atoms(std::vector<is::SimState> &regions,
 	}
 	return atomColors;
 }
-void QueryTask::make_atom_geometry(const std::vector<is::SimState> &regions,
-		std::vector<Geometry> &spheres, const std::vector<vec4f> &atom_colors)
+ospray::cpp::Geometry QueryTask::make_atom_geometry(const is::SimState &region,
+		const std::vector<vec4f> &atom_colors)
 {
 	Data color_data = Data(atom_colors.size(), OSP_FLOAT4, atom_colors.data());
 	color_data.commit();
-	for (size_t i = 0; i < regions.size(); ++i) {
-		const is::SimState &region = regions[i];
+	// The geometries are interleaved with the spheres representing the atoms
+	// and the cylinders representing the bonds
+	Geometry geom("spheres");
 
-		// The geometries are interleaved with the spheres representing the atoms
-		// and the cylinders representing the bonds
-		if (render_splatter) {
-			spheres.emplace_back("splats");
-		} else {
-			spheres.emplace_back("spheres");
-		}
-
-		// Setup the local sphere data for this region
-		Data sphere_data = Data(region.particles.array->numBytes(),
-				OSP_UCHAR, region.particles.array->data(), OSP_DATA_SHARED_BUFFER);
-		sphere_data.commit();
-		Geometry &geom = spheres.back();
-		if (render_splatter) {
-			geom.set("splats", sphere_data);
-			geom.set("splatStride", int(sizeof(Sphere)));
-		} else {
-			geom.set("spheres", sphere_data);
-		}
-		geom.set("color", color_data);
-		geom.set("offset_colorID", int(sizeof(vec3f)));
-		geom.set("radius", radius);
-		geom.commit();
-	}
+	// Setup the local sphere data for this region
+	Data sphere_data = Data(region.particles.array->numBytes(),
+			OSP_UCHAR, region.particles.array->data(), OSP_DATA_SHARED_BUFFER);
+	sphere_data.commit();
+	geom.set("spheres", sphere_data);
+	geom.set("color", color_data);
+	geom.set("offset_colorID", int(sizeof(vec3f)));
+	geom.set("radius", radius);
+	geom.commit();
+	return geom;
 }
 // Map the simulation atom type to the periodic table atom type for the
 // rhodopsin simulation
@@ -229,70 +235,68 @@ uint16_t map_silicine_atom_types(int type) {
 	}
 	return -1;
 }
-void QueryTask::make_bond_geometry(const std::vector<is::SimState> &regions,
-		std::vector<Geometry> &cylinders, const std::vector<vec4f> &atom_colors,
-		const box3f &world_bounds, const std::array<int, 2> &atom_type_range)
+ospray::cpp::Geometry QueryTask::make_bond_geometry(const is::SimState &region,
+		const std::vector<vec4f> &atom_colors, const box3f &world_bounds,
+		const std::array<int, 2> &atom_type_range)
 {
 	std::cout << "Computing bonds" << std::endl;
 	const int bond_type = bond_atom_type;
 	std::vector<vec3f> cylinder_pts;
-	for (size_t i = 0; i < regions.size(); ++i) {
-		cylinder_pts.clear();
+	std::cout << "Computing bonds for region with "
+		<< region.particles.numParticles << " atoms and "
+		<< region.particles.numGhost << " ghost, total of "
+		<< region.particles.numParticles + region.particles.numGhost
+		<< " atoms\n";
 
-		const is::SimState &region = regions[i];
-		std::cout << "Computing bonds for region " << i
-			<< ", with " << region.particles.numParticles + region.particles.numGhost
-			<< " atoms\n";
-
-		auto molecule = vtkSmartPointer<vtkMolecule>::New();
-		const Sphere *spheres = reinterpret_cast<const Sphere*>(region.particles.array->data());
-		size_t firstGhostAtom = 0;
-		for (size_t i = 0; i < region.particles.numParticles + region.particles.numGhost; ++i) {
-			if (spheres[i].atom_type == bond_atom_type) {
-				if (i < region.particles.numParticles) {
-					++firstGhostAtom;
-				}
-				const uint16_t type = map_silicine_atom_types(spheres[i].atom_type);
-				molecule->AppendAtom(type, spheres[i].pos.x, spheres[i].pos.y, spheres[i].pos.z);
+	auto molecule = vtkSmartPointer<vtkMolecule>::New();
+	const Sphere *spheres = reinterpret_cast<const Sphere*>(region.particles.array->data());
+	size_t firstGhostAtom = 0;
+	for (size_t i = 0; i < region.particles.numParticles + region.particles.numGhost; ++i) {
+		if (spheres[i].atom_type == bond_atom_type) {
+			if (i < region.particles.numParticles) {
+				++firstGhostAtom;
 			}
-		}
-
-		auto bonds_molecule = vtkSmartPointer<vtkMolecule>::New();
-		auto bond_filter = vtkSmartPointer<vtkSimpleBondPerceiver>::New();
-		bond_filter->SetInputData(molecule.Get());
-		bond_filter->SetOutput(bonds_molecule.Get());
-		bond_filter->SetTolerance(bond_dist);
-		bond_filter->Update();
-		std::cout << "Computed " << bonds_molecule->GetNumberOfBonds() << " bonds" << std::endl;
-
-		if (bonds_molecule->GetNumberOfBonds() > 0) {
-			cylinder_pts.reserve(bonds_molecule->GetNumberOfBonds() * 2);
-			for (size_t i = 0; i < bonds_molecule->GetNumberOfBonds(); ++i) {
-				vtkBond bond = bonds_molecule->GetBond(i);
-				if (bond.GetBeginAtomId() < firstGhostAtom || bond.GetEndAtomId() < firstGhostAtom) {
-					vec3f p;
-					bonds_molecule->GetAtomPosition(bond.GetBeginAtomId(), &p.x);
-					cylinder_pts.push_back(p);
-
-					bonds_molecule->GetAtomPosition(bond.GetEndAtomId(), &p.x);
-					cylinder_pts.push_back(p);
-				}
-			}
-
-			Data cylinder_data = Data(cylinder_pts.size() * sizeof(vec3f), OSP_UCHAR,
-					cylinder_pts.data());
-
-			const std::vector<vec4f> cylinder_colors(cylinder_pts.size() / 2, atom_colors[bond_type]);
-			Data cylinder_color_data = Data(cylinder_colors.size(), OSP_FLOAT4,
-					cylinder_colors.data());
-
-			cylinders.emplace_back("cylinders");
-			Geometry &geom = cylinders.back();
-			geom.set("cylinders", cylinder_data);
-			geom.set("radius", radius * 0.5);
-			geom.set("color", cylinder_color_data);
-			geom.commit();
+			const uint16_t type = map_silicine_atom_types(spheres[i].atom_type);
+			molecule->AppendAtom(type, spheres[i].pos.x, spheres[i].pos.y, spheres[i].pos.z);
 		}
 	}
+
+	auto bonds_molecule = vtkSmartPointer<vtkMolecule>::New();
+	auto bond_filter = vtkSmartPointer<vtkSimpleBondPerceiver>::New();
+	bond_filter->SetInputData(molecule.Get());
+	bond_filter->SetOutput(bonds_molecule.Get());
+	bond_filter->SetTolerance(bond_dist);
+	bond_filter->Update();
+	std::cout << "Computed " << bonds_molecule->GetNumberOfBonds() << " bonds" << std::endl;
+
+	if (bonds_molecule->GetNumberOfBonds() > 0) {
+		cylinder_pts.reserve(bonds_molecule->GetNumberOfBonds() * 2);
+		for (size_t i = 0; i < bonds_molecule->GetNumberOfBonds(); ++i) {
+			vtkBond bond = bonds_molecule->GetBond(i);
+			if (bond.GetBeginAtomId() < firstGhostAtom || bond.GetEndAtomId() < firstGhostAtom) {
+				vec3f p;
+				bonds_molecule->GetAtomPosition(bond.GetBeginAtomId(), &p.x);
+				cylinder_pts.push_back(p);
+
+				bonds_molecule->GetAtomPosition(bond.GetEndAtomId(), &p.x);
+				cylinder_pts.push_back(p);
+			}
+		}
+
+		Data cylinder_data = Data(cylinder_pts.size() * sizeof(vec3f), OSP_UCHAR,
+				cylinder_pts.data());
+
+		const std::vector<vec4f> cylinder_colors(cylinder_pts.size() / 2, atom_colors[bond_type]);
+		Data cylinder_color_data = Data(cylinder_colors.size(), OSP_FLOAT4,
+				cylinder_colors.data());
+
+		Geometry geom("cylinders");
+		geom.set("cylinders", cylinder_data);
+		geom.set("radius", radius * 0.5);
+		geom.set("color", cylinder_color_data);
+		geom.commit();
+		return geom;
+	}
+	return nullptr;
 }
 
