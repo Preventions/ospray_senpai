@@ -4,7 +4,7 @@ Interactive viewer client for use with [SENSEI](https://sensei-insitu.org/) base
 An example video of the our viewer used with [libIS](https://github.com/ospray/libIS)
 and LAMMPS can be seen on [YouTube](https://youtu.be/YUH55CvPmxg),
 This is the code for the viewer described in the paper, see
-[the paper for more details]().
+[the paper for more details](https://www.willusher.io/publications/libis-isav18).
 The viewer requires OSPRay, TurboJpeg, VTK, GLFW, Dear ImGui (included) and gl3w (included).
 
 Will Usher, Silvio Rizzi, Ingo Wald, Jefferson Amstutz, Joseph Insley,
