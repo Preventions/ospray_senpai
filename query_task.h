@@ -23,7 +23,7 @@
 #include "ospray/ospray_cpp/Model.h"
 #include "ospray/ospray_cpp/Geometry.h"
 
-#include "libIS/is_render.h"
+#include "libIS/is_client.h"
 
 struct Sphere {
 	ospcommon::vec3f pos;

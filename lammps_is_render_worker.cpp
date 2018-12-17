@@ -31,7 +31,7 @@
 #include "ospray/ospray_cpp/Renderer.h"
 #include "ospray/ospray_cpp/TransferFunction.h"
 #include "ospray/ospray_cpp/Model.h"
-#include "libIS/is_render.h"
+#include "libIS/is_client.h"
 #include "colormap.h"
 #include "util.h"
 #include "image_util.h"
@@ -47,7 +47,6 @@ std::string sim_host;
 int sim_port = -1;
 int client_port = -1;
 bool mpi_multilaunch = false;
-bool render_splatter = false;
 std::string frame_output_prefix;
 std::string benchmark_log_file;
 size_t bench_frames = 0;
@@ -84,8 +83,6 @@ int main(int argc, char **argv) {
 			client_port = std::stoi(argv[++i]);
 		} else if (args[i] == "-mpi-multi") {
 			mpi_multilaunch = true;
-		} else if (args[i] == "-splatter") {
-			render_splatter = true;
 		} else if (args[i] == "-radius") {
 			radius = std::stof(args[++i]);
 		} else if (args[i] == "-o") {
@@ -109,7 +106,6 @@ int main(int argc, char **argv) {
 			<< "  -mpi-multi             Pass this flag to indicate the run is with MPI's\n"
 			<< "                         multi-program launch mode. In this case sim host and\n"
 			<< "                         port are not needed\n"
-			<< "  -splatter              Render using the distributed splatter instead (requires module_splatter)\n"
 			<< "  -no-bonds              Don't compute bonds\n"
 			<< "  -radius <float>        Set the radius for atoms\n"
 			<< "  -o <file pattern>      Dump frames to files with the prefix 'file_pattern'\n"
@@ -138,9 +134,6 @@ int main(int argc, char **argv) {
 }
 void run_renderer() {
 	ospLoadModule("mpi");
-	if (render_splatter) {
-		ospLoadModule("splatter");
-	}
 	Device device("mpi_distributed");
 
 	ospDeviceSetVoidPtr(device.handle(), "worldCommunicator",
@@ -169,10 +162,10 @@ void run_renderer() {
 
 	if (mpi_multilaunch) {
 		std::cout << "Connecting with existing comm for renderer" << std::endl;
-		is::render::connectWithExisting(worker_comm, MPI_COMM_WORLD);
+		is::client::connectWithExisting(worker_comm, MPI_COMM_WORLD);
 	} else {
 		std::cout << "Connecting over the network to the simulation" << std::endl;
-		is::render::connect(sim_host, sim_port, MPI_COMM_WORLD);
+		is::client::connect(sim_host, sim_port, MPI_COMM_WORLD);
 	}
 
 	const bool benchmarking = !benchmark_log_file.empty();
@@ -199,14 +192,10 @@ void run_renderer() {
 	camera.set("aspect", static_cast<float>(app.fbSize.x) / app.fbSize.y);
 	camera.commit();
 
-	Renderer renderer(render_splatter ? "mpi_splatter" : "mpi_raycast");
+	Renderer renderer("mpi_raycast");
 	renderer.set("camera", camera);
 	renderer.set("aoSamples", ao_samples);
-	if (render_splatter) {
-		renderer.set("bgColor", vec3f(0.0));
-	} else {
-		renderer.set("bgColor", vec3f(1.0));
-	}
+	renderer.set("bgColor", vec3f(1.0));
 
 	JPGCompressor output_compressor(90, true);
 
@@ -331,6 +320,6 @@ void run_renderer() {
 
 	benchmark_out = nullptr;
 	query_task = nullptr;
-	is::render::disconnect();
+	is::client::disconnect();
 }
 

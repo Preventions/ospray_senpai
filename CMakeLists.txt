@@ -53,7 +53,7 @@ if (LAMMPS_IS_RENDER_WORKER)
 		query_task.cpp)
 	target_link_libraries(lammps_is_render_worker PUBLIC
 		lammps_is_util
-		is_render
+		is_client
 		${OSPRAY_LIBRARIES}
 		${OSPRAY_MPI_LIBRARIES}
 		${MPI_CXX_LIBRARIES})

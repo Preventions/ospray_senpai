@@ -78,7 +78,7 @@ std::shared_ptr<SimulationState> QueryTask::take() {
 void QueryTask::queryThread() {
 	do {
 		std::shared_ptr<SimulationState> state = std::make_shared<SimulationState>();
-		state->regions = is::render::query();
+		state->regions = is::client::query();
 		if (quitThread) {
 			break;
 		}
