@@ -1,10 +1,10 @@
-project(imgui)
+add_library(imgui imgui.cpp imgui_demo.cpp imgui_draw.cpp
+	imgui_widgets.cpp)
 
-add_library(imgui STATIC imgui.cpp imgui_demo.cpp imgui_draw.cpp)
-set_property(TARGET imgui PROPERTY CXX_STANDARD_REQUIRED 11)
 target_include_directories(imgui PUBLIC
-	$<BUILD_INTERFACE:${imgui_BINARY_DIR}>
-	$<BUILD_INTERFACE:${imgui_SOURCE_DIR}>
-	$<INSTALL_INTERFACE:include>
-)
+	$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>)
+
+set_target_properties(imgui PROPERTIES
+	CXX_STANDARD 14
+	CXX_STANDARD_REQUIRED ON)
 
