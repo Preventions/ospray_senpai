@@ -57,8 +57,15 @@ int main(int argc, const char **argv) {
 
 	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
 		std::cerr << "Failed to init SDL: " << SDL_GetError() << "\n";
-		return -1;
+		return 2;
 	}
+
+	if (ospInit(&argc, argv) != OSP_NO_ERROR) {
+		std::cout << "Failed to init OSPRay\n";
+		return 3;
+	}
+
+	//ospLoadModule("mpi");
 
 	const char* glsl_version = "#version 330 core";
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
@@ -153,6 +160,47 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 	glClearColor(0.0, 0.0, 0.0, 0.0);
 	glDisable(GL_DEPTH_TEST);
 
+	OSPFrameBuffer fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
+			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+
+	OSPModel world = ospNewModel();
+	OSPCamera ospcamera = ospNewCamera("perspective");
+	OSPRenderer renderer = ospNewRenderer("ao");
+	ospSet1i(renderer, "aoSamples", 1);
+	ospSetObject(renderer, "model", world);
+	ospSetObject(renderer, "camera", ospcamera);
+
+	float vertex[] = { -1.0f, -1.0f, 3.0f, 0.f,
+		-1.0f,  1.0f, 3.0f, 0.f,
+		1.0f, -1.0f, 3.0f, 0.f,
+		0.1f,  0.1f, 0.3f, 0.f };
+	float color[] =  { 0.9f, 0.5f, 0.5f, 1.0f,
+		0.8f, 0.8f, 0.8f, 1.0f,
+		0.8f, 0.8f, 0.8f, 1.0f,
+		0.5f, 0.9f, 0.5f, 1.0f };
+	int32_t index[] = { 0, 1, 2,
+		1, 2, 3 };
+	OSPGeometry mesh = ospNewGeometry("triangles");
+	OSPData data = ospNewData(4, OSP_FLOAT3A, vertex, 0);
+	ospCommit(data);
+	ospSetData(mesh, "vertex", data);
+	ospRelease(data);
+
+	data = ospNewData(4, OSP_FLOAT4, color, 0);
+	ospCommit(data);
+	ospSetData(mesh, "vertex.color", data);
+	ospRelease(data);
+
+	data = ospNewData(2, OSP_INT3, index, 0);
+	ospCommit(data);
+	ospSetData(mesh, "index", data);
+	ospRelease(data);
+	ospCommit(mesh);
+
+	ospAddGeometry(world, mesh);
+	ospCommit(world);
+	ospCommit(renderer);
+
 	size_t frame_id = 0;
 	glm::vec2 prev_mouse(-2.f);
 	bool done = false;
@@ -200,6 +248,8 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 				}
 			}
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
+				camera_changed = true;
+
 				win_width = event.window.data1;
 				win_height = event.window.data2;
 				io.DisplaySize.x = win_width;
@@ -216,12 +266,30 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+				ospSet1f(ospcamera, "aspect", static_cast<float>(win_width) / win_height);
+
+				ospRelease(fb);
+				fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
+						OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 			}
 		}
 
 		if (data_changed || camera_changed) {
-			// Clear framebuffer
+			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
+			ospCommit(renderer);
+
+			auto eye = camera.eye();
+			auto dir = camera.dir();
+			auto up = camera.up();
+			ospSet3fv(ospcamera, "pos", &eye.x);
+			ospSet3fv(ospcamera, "dir", &dir.x);
+			ospSet3fv(ospcamera, "up", &up.x);
+			ospSet1f(ospcamera, "fovy", 65.f);
+			ospCommit(ospcamera);
 		}
+
+		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
+
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplSDL2_NewFrame(window);
 		ImGui::NewFrame();
@@ -236,10 +304,12 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 		ImGui::Render();
 		glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
 
-		/*
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, win_width, win_height, GL_RGBA,
-				GL_UNSIGNED_BYTE, renderer->img.data());
-		*/
+		{
+			const uint32_t *mapped = static_cast<const uint32_t*>(ospMapFrameBuffer(fb, OSP_FB_COLOR));
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, win_width, win_height, GL_RGBA,
+					GL_UNSIGNED_BYTE, mapped);
+			ospUnmapFrameBuffer(mapped, fb);
+		}
 
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		glUseProgram(display_render.program);
