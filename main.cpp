@@ -46,7 +46,16 @@ int win_height = 720;
 int rank = -1;
 int world_size = -1;
 
-void run_app(const std::vector<std::string> &args, SDL_Window *window);
+struct AppState {
+	glm::vec3 cam_pos, cam_dir, cam_up;
+	glm::ivec2 fb_dims;
+	bool camera_changed = false;
+	bool fbsize_changed = false;
+	bool done = false;
+};
+
+void run_viewer(const std::vector<std::string> &args);
+void run_worker(const std::vector<std::string> &args);
 
 glm::vec2 transform_mouse(glm::vec2 in) {
 	return glm::vec2(in.x * 2.f / win_width - 1.f, 1.f - 2.f * in.y / win_height);
@@ -58,10 +67,14 @@ int main(int argc, const char **argv) {
 		return 1;
 	}
 
-	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
-		std::cerr << "Failed to init SDL: " << SDL_GetError() << "\n";
+	int provided = 0;
+	MPI_Init_thread(&argc, (char***)&argv, MPI_THREAD_MULTIPLE, &provided);
+	if (provided != MPI_THREAD_MULTIPLE && provided != MPI_THREAD_SERIALIZED) {
+		std::cout << "MPI Thread Multiple or Serialized is required!\n";
 		return 1;
 	}
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
 	ospLoadModule("ispc");
 	if (ospLoadModule("mpi") != OSP_NO_ERROR) {
@@ -73,6 +86,24 @@ int main(int argc, const char **argv) {
 	ospDeviceCommit(device);
 	ospSetCurrentDevice(device);
 
+	std::vector<std::string> args(argv, argv + argc);
+
+	if (rank == 0) {
+		run_viewer(args);
+	} else {
+		run_worker(args);
+	}
+	ospShutdown();
+
+	MPI_Finalize();
+
+	return 0;
+}
+void run_viewer(const std::vector<std::string> &args) {
+	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
+		std::cerr << "Failed to init SDL: " << SDL_GetError() << "\n";
+		throw std::runtime_error("Failed to init SDL");
+	}
 	const char* glsl_version = "#version 330 core";
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -94,7 +125,7 @@ int main(int argc, const char **argv) {
 
 	if (ogl_LoadFunctions() == ogl_LOAD_FAILED) {
 		std::cerr << "Failed to initialize OpenGL\n";
-		return 1;
+		throw std::runtime_error("Failed to init OpenGL");
 	}
 
 	// Setup Dear ImGui context
@@ -107,24 +138,6 @@ int main(int argc, const char **argv) {
 	ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
 	ImGui_ImplOpenGL3_Init(glsl_version);
 
-	std::vector<std::string> args(argv, argv + argc);
-
-	run_app(args, window);
-
-	ospShutdown();
-
-	ImGui_ImplOpenGL3_Shutdown();
-	ImGui_ImplSDL2_Shutdown();
-	ImGui::DestroyContext();
-
-	SDL_GL_DeleteContext(gl_context);
-	SDL_DestroyWindow(window);
-	SDL_Quit();
-
-	return 0;
-}
-
-void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 	ImGuiIO& io = ImGui::GetIO();
 
 	glm::vec3 eye(0, 0, 5);
@@ -148,7 +161,7 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 
 	ArcballCamera camera(eye, center, up);
 
-	Shader display_render(fullscreen_quad_vs, display_texture_fs);
+	auto display_render = std::make_unique<Shader>(fullscreen_quad_vs, display_texture_fs);
 
 	GLuint render_texture;
 	glGenTextures(1, &render_texture);
@@ -212,21 +225,22 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 	// Note: we commit for the first time in the render loop as well
 	// b/c we mark the camera as changed
 
+	AppState app_state;
 	size_t frame_id = 0;
 	glm::vec2 prev_mouse(-2.f);
-	bool done = false;
 	bool camera_changed = true;
+	bool fbsize_changed = false;
 	bool data_changed = false;
-	while (!done) {
+	while (!app_state.done) {
 		SDL_Event event;
 		while (SDL_PollEvent(&event)) {
 			ImGui_ImplSDL2_ProcessEvent(&event);
 			if (event.type == SDL_QUIT) {
-				done = true;
+				app_state.done = true;
 			}
 			if (!io.WantCaptureKeyboard && event.type == SDL_KEYDOWN) {
 				if (event.key.keysym.sym == SDLK_ESCAPE) {
-					done = true;
+					app_state.done = true;
 				} else if (event.key.keysym.sym == SDLK_p) {
 					auto eye = camera.eye();
 					auto center = camera.center();
@@ -238,7 +252,7 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 			}
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE
 					&& event.window.windowID == SDL_GetWindowID(window)) {
-				done = true;
+				app_state.done = true;
 			}
 			if (!io.WantCaptureMouse) {
 				if (event.type == SDL_MOUSEMOTION) {
@@ -259,7 +273,7 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 				}
 			}
 			if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
-				camera_changed = true;
+				fbsize_changed = true;
 
 				win_width = event.window.data1;
 				win_height = event.window.data2;
@@ -276,30 +290,33 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-				ospSet1f(ospcamera, "aspect", static_cast<float>(win_width) / win_height);
-				ospCommit(ospcamera);
-				ospCommit(renderer);
-
-				ospRelease(fb);
-				fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
-						OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 			}
 		}
 
-		if (data_changed || camera_changed) {
-			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
+		app_state.cam_pos = camera.eye();
+		app_state.cam_dir = camera.dir();
+		app_state.cam_up = camera.up();
+		app_state.fb_dims = glm::ivec2(win_width, win_height);
+		app_state.camera_changed = camera_changed;
+		app_state.fbsize_changed = fbsize_changed;
+		MPI_Bcast(&app_state, sizeof(app_state), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-			auto eye = camera.eye();
-			auto dir = camera.dir();
-			auto up = camera.up();
-			ospSet3fv(ospcamera, "pos", &eye.x);
-			ospSet3fv(ospcamera, "dir", &dir.x);
-			ospSet3fv(ospcamera, "up", &up.x);
+		if (data_changed || camera_changed || fbsize_changed) {
+			if (fbsize_changed) {
+				ospRelease(fb);
+				fb = ospNewFrameBuffer(osp::vec2i{app_state.fb_dims.x, app_state.fb_dims.y},
+						OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+			}
+
+			ospSet3fv(ospcamera, "pos", &app_state.cam_pos.x);
+			ospSet3fv(ospcamera, "dir", &app_state.cam_dir.x);
+			ospSet3fv(ospcamera, "up", &app_state.cam_up.x);
 			ospSet1f(ospcamera, "fovy", 65.f);
-			ospSet1f(ospcamera, "aspect", static_cast<float>(win_width) / win_height);
+			ospSet1f(ospcamera, "aspect",
+					static_cast<float>(app_state.fb_dims.x) / app_state.fb_dims.y);
 			ospCommit(ospcamera);
 			ospCommit(renderer);
+			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
 		}
 
 		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
@@ -326,7 +343,7 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 		}
 
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		glUseProgram(display_render.program);
+		glUseProgram(display_render->program);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -336,6 +353,94 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 		++frame_id;
 		camera_changed = false;
 		data_changed = false;
+	}
+
+	// Release the shader before we release the GL context
+	display_render = nullptr;
+
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplSDL2_Shutdown();
+	ImGui::DestroyContext();
+
+	SDL_GL_DeleteContext(gl_context);
+	SDL_DestroyWindow(window);
+	SDL_Quit();
+}
+void run_worker(const std::vector<std::string>&) {
+	OSPFrameBuffer fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
+			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+
+	OSPModel world = ospNewModel();
+	ospSet1i(world, "id", 0);
+	ospSet3f(world, "region.lower", -1.f, -1.f, 0.f);
+	ospSet3f(world, "region.upper", 1.f, 1.f, 3.5f);
+
+	float vertex[] = { -1.0f, -1.0f, 3.0f, 0.f,
+		-1.0f,  1.0f, 3.0f, 0.f,
+		1.0f, -1.0f, 3.0f, 0.f,
+		0.1f,  0.1f, 0.3f, 0.f };
+	float color[] =  { 0.9f, 0.5f, 0.5f, 1.0f,
+		0.8f, 0.8f, 0.8f, 1.0f,
+		0.8f, 0.8f, 0.8f, 1.0f,
+		0.5f, 0.9f, 0.5f, 1.0f };
+	int32_t index[] = { 0, 1, 2,
+		1, 2, 3 };
+	OSPGeometry mesh = ospNewGeometry("triangles");
+	OSPData data = ospNewData(4, OSP_FLOAT3A, vertex, 0);
+	ospCommit(data);
+	ospSetData(mesh, "vertex", data);
+	ospRelease(data);
+
+	data = ospNewData(4, OSP_FLOAT4, color, 0);
+	ospCommit(data);
+	ospSetData(mesh, "vertex.color", data);
+	ospRelease(data);
+
+	data = ospNewData(2, OSP_INT3, index, 0);
+	ospCommit(data);
+	ospSetData(mesh, "index", data);
+	ospRelease(data);
+	ospCommit(mesh);
+
+	ospAddGeometry(world, mesh);
+	ospCommit(world);
+
+	OSPCamera ospcamera = ospNewCamera("perspective");
+	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
+	ospSetObject(renderer, "model", world);
+	ospSetObject(renderer, "camera", ospcamera);
+	// Note: we commit for the first time in the render loop as well
+	// b/c we mark the camera as changed
+
+	AppState app_state;
+	size_t frame_id = 0;
+	glm::vec2 prev_mouse(-2.f);
+	while (!app_state.done) {
+		// TODO: Check if we got new data
+
+		MPI_Bcast(&app_state, sizeof(app_state), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+		if (app_state.camera_changed || app_state.fbsize_changed) {
+			if (app_state.fbsize_changed) {
+				ospRelease(fb);
+				fb = ospNewFrameBuffer(osp::vec2i{app_state.fb_dims.x, app_state.fb_dims.y},
+						OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+			}
+
+			ospSet3fv(ospcamera, "pos", &app_state.cam_pos.x);
+			ospSet3fv(ospcamera, "dir", &app_state.cam_dir.x);
+			ospSet3fv(ospcamera, "up", &app_state.cam_up.x);
+			ospSet1f(ospcamera, "fovy", 65.f);
+			ospSet1f(ospcamera, "aspect",
+					static_cast<float>(app_state.fb_dims.x) / app_state.fb_dims.y);
+			ospCommit(ospcamera);
+			ospCommit(renderer);
+			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
+		}
+
+		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
+
+		++frame_id;
 	}
 }
 
