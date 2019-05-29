@@ -46,6 +46,8 @@ int win_width = 1280;
 int win_height = 720;
 int rank = -1;
 int world_size = -1;
+std::string display_field;
+glm::vec2 value_range(0.f, 1.f);
 
 struct AppState {
 	glm::vec3 cam_pos, cam_dir, cam_up;
@@ -101,6 +103,15 @@ int main(int argc, const char **argv) {
 	is::client::connect(argv[1], std::stoi(argv[2]), MPI_COMM_WORLD);
 
 	std::vector<std::string> args(argv, argv + argc);
+
+	for (size_t i = 1; i < args.size(); ++i) {
+		if (args[i] == "-field") {
+			display_field = args[++i];
+		} else if (args[i] == "-range") {
+			value_range.x = std::stof(args[++i]);
+			value_range.y = std::stof(args[++i]);
+		}
+	}
 
 	if (rank == 0) {
 		run_viewer(args);
@@ -205,6 +216,9 @@ void run_viewer(const std::vector<std::string> &args) {
 	log_regions(regions);
 	OSPModel world = build_regions(regions, tfcn);
 
+	// Start querying for the next timestep asynchronously
+	auto region_future = is::client::query_async();
+
 	OSPCamera ospcamera = ospNewCamera("perspective");
 	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
 	ospSetObject(renderer, "model", world);
@@ -282,6 +296,18 @@ void run_viewer(const std::vector<std::string> &args) {
 			}
 		}
 
+		if (region_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+			data_changed = true;
+			regions = region_future.get();
+			OSPModel newworld = build_regions(regions, tfcn);
+			ospSetObject(renderer, "model", newworld);
+			ospCommit(renderer);
+			// TODO: Releasing the world here shouldn't segfault
+			//ospRelease(world);
+		
+			region_future = is::client::query_async();
+		}
+
 		app_state.cam_pos = camera.eye();
 		app_state.cam_dir = camera.dir();
 		app_state.cam_up = camera.up();
@@ -352,16 +378,6 @@ void run_viewer(const std::vector<std::string> &args) {
 		++frame_id;
 		camera_changed = false;
 		data_changed = false;
-
-#if 1
-		data_changed = true;
-		regions = is::client::query();
-		OSPModel newworld = build_regions(regions, tfcn);
-		ospSetObject(renderer, "model", newworld);
-		ospCommit(renderer);
-		// TODO: Releasing the world here shouldn't segfault
-		//ospRelease(world);
-#endif
 	}
 
 	// Release the shader before we release the GL context
@@ -383,8 +399,10 @@ void run_worker(const std::vector<std::string>&) {
 	// Query the first timestep from the simulation
 	auto regions = is::client::query();
 	log_regions(regions);
-	// TODO: Assumes a single region per-rank
 	OSPModel world = build_regions(regions, tfcn);
+
+	// Start querying for the next timestep asynchronously
+	auto region_future = is::client::query_async();
 
 	OSPCamera ospcamera = ospNewCamera("perspective");
 	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
@@ -398,7 +416,17 @@ void run_worker(const std::vector<std::string>&) {
 	glm::vec2 prev_mouse(-2.f);
 	bool data_changed = false;
 	while (!app_state.done) {
-		// TODO: Check if we got new data
+		if (region_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+			data_changed = true;
+			regions = region_future.get();
+			OSPModel newworld = build_regions(regions, tfcn);
+			ospSetObject(renderer, "model", newworld);
+			ospCommit(renderer);
+			// TODO: Releasing the world here shouldn't segfault
+			//ospRelease(world);
+		
+			region_future = is::client::query_async();
+		}
 
 		MPI_Bcast(&app_state, sizeof(app_state), MPI_BYTE, 0, MPI_COMM_WORLD);
 
@@ -434,16 +462,6 @@ void run_worker(const std::vector<std::string>&) {
 		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
 
 		++frame_id;
-
-#if 1
-		data_changed = true;
-		regions = is::client::query();
-		OSPModel newworld = build_regions(regions, tfcn);
-		ospSetObject(renderer, "model", newworld);
-		ospCommit(renderer);
-		// TODO: Releasing the world here shouldn't segfault
-		//ospRelease(world);
-#endif
 	}
 }
 OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn) {
@@ -475,14 +493,12 @@ OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunc
 		ospAddGeometry(world, spheres);
 	}
 
-	const std::string display_field = "field_one";
 	for (const auto &f : region.fields) {
 		if (f.first != display_field) {
 			continue;
 		}
 
 		auto &field = f.second;
-		std::cout << "Found field " << f.first << " to display\n";
 		OSPVolume vol = ospNewVolume("shared_structured_volume");
 		ospSet3i(vol, "dimensions", field.dims[0], field.dims[1], field.dims[2]);
 		switch (field.dataType) {
@@ -557,7 +573,6 @@ void update_transfer_fcn(OSPTransferFunction tfcn, const std::vector<uint8_t> &c
 	ospCommit(opacity_data);
 
 	//The value range here will be different from Will's code. It will need to match Timo's data.
-	const glm::vec2 value_range(0.0f, 1.0f);
 	ospSetData(tfcn, "colors", colors_data);
 	ospSetData(tfcn, "opacities", opacity_data);
 	ospSet2f(tfcn, "valueRange", value_range.x, value_range.y);
