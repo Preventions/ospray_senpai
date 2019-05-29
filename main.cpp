@@ -13,6 +13,7 @@
 #include "arcball_camera.h"
 #include "shader.h"
 #include "util.h"
+#include "transfer_function_widget.h"
 
 const std::string fullscreen_quad_vs = R"(
 #version 330 core
@@ -52,12 +53,14 @@ struct AppState {
 	bool camera_changed = false;
 	bool fbsize_changed = false;
 	bool done = false;
+	bool tfcn_changed = false;
 };
 
 void run_viewer(const std::vector<std::string> &args);
 void run_worker(const std::vector<std::string> &args);
-OSPModel build_regions(const std::vector<is::SimState> &regions);
+OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn);
 void log_regions(const std::vector<is::SimState> &regions);
+void update_transfer_fcn(OSPTransferFunction tfcn, const std::vector<uint8_t> &colormap);
 
 std::ostream& operator<<(std::ostream &os, const libISBox3f &b) {
 	os << "{(" << b.min.x << ", " << b.min.y << ", " << b.min.z
@@ -192,13 +195,15 @@ void run_viewer(const std::vector<std::string> &args) {
 	glClearColor(0.0, 0.0, 0.0, 0.0);
 	glDisable(GL_DEPTH_TEST);
 
+	OSPTransferFunction tfcn = ospNewTransferFunction("piecewise_linear");
+
 	OSPFrameBuffer fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
 			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 
 	// Query the first timestep from the simulation
 	auto regions = is::client::query();
 	log_regions(regions);
-	OSPModel world = build_regions(regions);
+	OSPModel world = build_regions(regions, tfcn);
 
 	OSPCamera ospcamera = ospNewCamera("perspective");
 	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
@@ -206,6 +211,8 @@ void run_viewer(const std::vector<std::string> &args) {
 	ospSetObject(renderer, "camera", ospcamera);
 	// Note: we commit for the first time in the render loop as well
 	// b/c we mark the camera as changed
+
+	TransferFunctionWidget widget;
 
 	AppState app_state;
 	size_t frame_id = 0;
@@ -281,9 +288,18 @@ void run_viewer(const std::vector<std::string> &args) {
 		app_state.fb_dims = glm::ivec2(win_width, win_height);
 		app_state.camera_changed = camera_changed;
 		app_state.fbsize_changed = fbsize_changed;
+		app_state.tfcn_changed = widget.changed();
 		MPI_Bcast(&app_state, sizeof(app_state), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-		if (data_changed || camera_changed || fbsize_changed) {
+		if (app_state.tfcn_changed) {
+			auto colormap = widget.get_colormap();
+			size_t colormap_size = colormap.size();
+			MPI_Bcast(&colormap_size, sizeof(colormap_size), MPI_BYTE, 0, MPI_COMM_WORLD);
+			MPI_Bcast(colormap.data(), colormap.size(), MPI_BYTE, 0, MPI_COMM_WORLD);
+			update_transfer_fcn(tfcn, colormap);
+		}
+
+		if (camera_changed || fbsize_changed) {
 			if (fbsize_changed) {
 				ospRelease(fb);
 				fb = ospNewFrameBuffer(osp::vec2i{app_state.fb_dims.x, app_state.fb_dims.y},
@@ -298,6 +314,8 @@ void run_viewer(const std::vector<std::string> &args) {
 					static_cast<float>(app_state.fb_dims.x) / app_state.fb_dims.y);
 			ospCommit(ospcamera);
 			ospCommit(renderer);
+		}
+		if (data_changed || camera_changed || fbsize_changed) {
 			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
 		}
 
@@ -305,13 +323,12 @@ void run_viewer(const std::vector<std::string> &args) {
 		ImGui_ImplSDL2_NewFrame(window);
 		ImGui::NewFrame();
 
-		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
-
-		ImGui::Begin("Debug Panel");
-		ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-				1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-
+		if (ImGui::Begin("Transfer Function")) {
+			widget.draw_ui();
+		}
 		ImGui::End();
+
+		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
 
 		// Rendering
 		ImGui::Render();
@@ -335,6 +352,16 @@ void run_viewer(const std::vector<std::string> &args) {
 		++frame_id;
 		camera_changed = false;
 		data_changed = false;
+
+#if 0
+		data_changed = true;
+		regions = is::client::query();
+		OSPModel newworld = build_regions(regions, tfcn);
+		ospSetObject(renderer, "model", newworld);
+		ospCommit(renderer);
+		// TODO: Releasing the world here shouldn't segfault
+		//ospRelease(world);
+#endif
 	}
 
 	// Release the shader before we release the GL context
@@ -349,6 +376,7 @@ void run_viewer(const std::vector<std::string> &args) {
 	SDL_Quit();
 }
 void run_worker(const std::vector<std::string>&) {
+	OSPTransferFunction tfcn = ospNewTransferFunction("piecewise_linear");
 	OSPFrameBuffer fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
 			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 
@@ -356,7 +384,7 @@ void run_worker(const std::vector<std::string>&) {
 	auto regions = is::client::query();
 	log_regions(regions);
 	// TODO: Assumes a single region per-rank
-	OSPModel world = build_regions(regions);
+	OSPModel world = build_regions(regions, tfcn);
 
 	OSPCamera ospcamera = ospNewCamera("perspective");
 	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
@@ -368,10 +396,20 @@ void run_worker(const std::vector<std::string>&) {
 	AppState app_state;
 	size_t frame_id = 0;
 	glm::vec2 prev_mouse(-2.f);
+	bool data_changed = false;
 	while (!app_state.done) {
 		// TODO: Check if we got new data
 
 		MPI_Bcast(&app_state, sizeof(app_state), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+		if (app_state.tfcn_changed) {
+			std::vector<uint8_t> colormap;
+			size_t colormap_size = 0;
+			MPI_Bcast(&colormap_size, sizeof(colormap_size), MPI_BYTE, 0, MPI_COMM_WORLD);
+			colormap.resize(colormap_size);
+			MPI_Bcast(colormap.data(), colormap.size(), MPI_BYTE, 0, MPI_COMM_WORLD);
+			update_transfer_fcn(tfcn, colormap);
+		}
 
 		if (app_state.camera_changed || app_state.fbsize_changed) {
 			if (app_state.fbsize_changed) {
@@ -388,15 +426,27 @@ void run_worker(const std::vector<std::string>&) {
 					static_cast<float>(app_state.fb_dims.x) / app_state.fb_dims.y);
 			ospCommit(ospcamera);
 			ospCommit(renderer);
+		}
+		if (data_changed || app_state.camera_changed || app_state.fbsize_changed) {
 			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
 		}
 
 		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
 
 		++frame_id;
+
+#if 0
+		data_changed = true;
+		regions = is::client::query();
+		OSPModel newworld = build_regions(regions, tfcn);
+		ospSetObject(renderer, "model", newworld);
+		ospCommit(renderer);
+		// TODO: Releasing the world here shouldn't segfault
+		//ospRelease(world);
+#endif
 	}
 }
-OSPModel build_regions(const std::vector<is::SimState> &regions) {
+OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn) {
 	OSPModel world = ospNewModel();
 	if (regions.size() > 1) {
 		std::cout << "WARNING: Multiple regions per-rank are not handled right now\n";
@@ -449,29 +499,6 @@ OSPModel build_regions(const std::vector<is::SimState> &regions) {
 		ospSet1f(vol, "samplingRate", 1.f);
 		ospSet1i(vol, "adaptiveSampling", 0);
 
-		OSPTransferFunction tfcn = ospNewTransferFunction("piecewise_linear");
-		const std::vector<float> colors = {
-			0, 0, 0.563,
-			0, 0, 1,
-			0, 1, 1,
-			0.5, 1, 0.5,
-			1, 1, 0,
-			1, 0, 0,
-			0.5, 0, 0
-		};
-		const std::vector<float> opacities = {1.f, 1.f};
-		OSPData colors_data = ospNewData(colors.size() / 3, OSP_FLOAT3, colors.data());
-		ospCommit(colors_data);
-		OSPData opacity_data = ospNewData(opacities.size(), OSP_FLOAT, opacities.data());
-		ospCommit(opacity_data);
-
-		//The value range here will be different from Will's code. It will need to match Timo's data.
-		const glm::vec2 value_range(0.0f, 1.0f);
-		ospSetData(tfcn, "colors", colors_data);
-		ospSetData(tfcn, "opacities", opacity_data);
-		ospSet2f(tfcn, "valueRange", value_range.x, value_range.y);
-		ospCommit(tfcn);
-
 		ospSetObject(vol, "transferFunction", tfcn);
 		ospCommit(vol);
 		ospAddVolume(world, vol);
@@ -514,5 +541,26 @@ void log_regions(const std::vector<is::SimState> &regions) {
 		}
 		MPI_Barrier(MPI_COMM_WORLD);
 	}
+}
+void update_transfer_fcn(OSPTransferFunction tfcn, const std::vector<uint8_t> &colormap) {
+	std::vector<float> colors;
+	std::vector<float> opacities;
+	for (size_t i = 0; i < colormap.size() / 4; ++i) {
+		colors.push_back(colormap[i * 4] / 255.f);
+		colors.push_back(colormap[i * 4 + 1] / 255.f);
+		colors.push_back(colormap[i * 4 + 2] / 255.f);
+		opacities.push_back(colormap[i * 4 + 3] / 255.f);
+	}
+	OSPData colors_data = ospNewData(colors.size() / 3, OSP_FLOAT3, colors.data());
+	ospCommit(colors_data);
+	OSPData opacity_data = ospNewData(opacities.size(), OSP_FLOAT, opacities.data());
+	ospCommit(opacity_data);
+
+	//The value range here will be different from Will's code. It will need to match Timo's data.
+	const glm::vec2 value_range(0.0f, 1.0f);
+	ospSetData(tfcn, "colors", colors_data);
+	ospSetData(tfcn, "opacities", opacity_data);
+	ospSet2f(tfcn, "valueRange", value_range.x, value_range.y);
+	ospCommit(tfcn);
 }
 

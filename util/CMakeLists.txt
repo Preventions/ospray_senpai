@@ -4,7 +4,8 @@ add_library(util
 	imgui_impl_opengl3.cpp
 	shader.cpp
 	util.cpp
-	gl_core_4_5.c)
+	gl_core_4_5.c
+	transfer_function_widget.cpp)
 
 set_target_properties(util PROPERTIES
 	CXX_STANDARD 14
