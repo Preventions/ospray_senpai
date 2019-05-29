@@ -27,5 +27,5 @@ set_target_properties(ospray_senpai PROPERTIES
 	CXX_STANDARD_REQUIRED ON)
 
 target_link_libraries(ospray_senpai PUBLIC
-	util ospray::ospray MPI::MPI_CXX)
+	util ospray::ospray MPI::MPI_CXX is_client)
 

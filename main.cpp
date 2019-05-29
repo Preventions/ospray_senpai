@@ -5,7 +5,7 @@
 #include <mpi.h>
 #include <ospray.h>
 #include <SDL.h>
-#define TINYOBJLOADER_IMPLEMENTATION
+#include "libIS/is_client.h"
 #include "gl_core_4_5.h"
 #include "imgui.h"
 #include "imgui_impl_sdl.h"
@@ -56,6 +56,13 @@ struct AppState {
 
 void run_viewer(const std::vector<std::string> &args);
 void run_worker(const std::vector<std::string> &args);
+void log_regions(const std::vector<is::SimState> &regions);
+
+std::ostream& operator<<(std::ostream &os, const libISBox3f &b) {
+	os << "{(" << b.min.x << ", " << b.min.y << ", " << b.min.z
+		<< "), (" << b.max.x << ", " << b.max.y << ", " << b.max.z << ")}";
+	return os;
+}
 
 glm::vec2 transform_mouse(glm::vec2 in) {
 	return glm::vec2(in.x * 2.f / win_width - 1.f, 1.f - 2.f * in.y / win_height);
@@ -86,6 +93,9 @@ int main(int argc, const char **argv) {
 	ospDeviceCommit(device);
 	ospSetCurrentDevice(device);
 
+	std::cout << "Connecting to sim at " << argv[1] << ":" << argv[2] << "\n";
+	is::client::connect(argv[1], std::stoi(argv[2]), MPI_COMM_WORLD);
+
 	std::vector<std::string> args(argv, argv + argc);
 
 	if (rank == 0) {
@@ -95,6 +105,7 @@ int main(int argc, const char **argv) {
 	}
 	ospShutdown();
 
+	is::client::disconnect();
 	MPI_Finalize();
 
 	return 0;
@@ -182,6 +193,10 @@ void run_viewer(const std::vector<std::string> &args) {
 
 	OSPFrameBuffer fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
 			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+
+	// Query the first timestep from the simulation
+	auto regions = is::client::query();
+	log_regions(regions);
 
 	OSPModel world = ospNewModel();
 	ospSet1i(world, "id", 0);
@@ -370,6 +385,10 @@ void run_worker(const std::vector<std::string>&) {
 	OSPFrameBuffer fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
 			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 
+	// Query the first timestep from the simulation
+	auto regions = is::client::query();
+	log_regions(regions);
+
 	OSPModel world = ospNewModel();
 	ospSet1i(world, "id", 0);
 	ospSet3f(world, "region.lower", -1.f, -1.f, 0.f);
@@ -441,6 +460,41 @@ void run_worker(const std::vector<std::string>&) {
 		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
 
 		++frame_id;
+	}
+}
+void log_regions(const std::vector<is::SimState> &regions) {
+	for (int i = 0; i < world_size; ++i) {
+		if (rank == 0) {
+			std::cout << "Rank " << rank << " has " << regions.size() << " regions\n";
+			// For each region we received, print out its data
+			for (const auto &r : regions) {
+				std::cout << "Region:\n"
+					<< "world bounds: " << r.world << "\n"
+					<< "local bounds: " << r.local << "\n"
+					<< "ghost bounds: " << r.ghost << "\n"
+					<< "Region has " << r.particles.numParticles
+					<< " particles and " << r.fields.size() << " fields\n";
+				std::cout << "Fields: {";
+				for (const auto &f : r.fields) {
+					std::cout << "(" << f.first << ", ";
+					if (f.second.dataType == UINT8) {
+						std::cout << "uint8";
+					} else if (f.second.dataType == FLOAT) {
+						std::cout << "float";
+					} else if (f.second.dataType == DOUBLE) {
+						std::cout << "double";
+					} else {
+						std::cout << "INVALID!";
+					}
+					std::cout << ", [" << f.second.dims[0] << ", "
+						<< f.second.dims[1] << ", " << f.second.dims[2]
+						<< "]), ";
+				}
+				std::cout << "}\n";
+			}
+			std::cout << "--------" << std::endl;
+		}
+		MPI_Barrier(MPI_COMM_WORLD);
 	}
 }
 
