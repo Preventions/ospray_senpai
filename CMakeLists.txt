@@ -15,6 +15,7 @@ find_package(SDL2 REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(ospray REQUIRED)
 find_package(libIS REQUIRED)
+find_package(MPI REQUIRED)
 
 add_subdirectory(imgui)
 add_subdirectory(util)
@@ -25,5 +26,6 @@ set_target_properties(ospray_senpai PROPERTIES
 	CXX_STANDARD 14
 	CXX_STANDARD_REQUIRED ON)
 
-target_link_libraries(ospray_senpai PUBLIC util ospray::ospray)
+target_link_libraries(ospray_senpai PUBLIC
+	util ospray::ospray MPI::MPI_CXX)
 

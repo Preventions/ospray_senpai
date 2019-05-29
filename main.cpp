@@ -2,6 +2,7 @@
 #include <memory>
 #include <vector>
 #include <array>
+#include <mpi.h>
 #include <ospray.h>
 #include <SDL.h>
 #define TINYOBJLOADER_IMPLEMENTATION
@@ -42,6 +43,8 @@ void main(void){
 
 int win_width = 1280;
 int win_height = 720;
+int rank = -1;
+int world_size = -1;
 
 void run_app(const std::vector<std::string> &args, SDL_Window *window);
 
@@ -57,15 +60,18 @@ int main(int argc, const char **argv) {
 
 	if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
 		std::cerr << "Failed to init SDL: " << SDL_GetError() << "\n";
-		return 2;
+		return 1;
 	}
 
-	if (ospInit(&argc, argv) != OSP_NO_ERROR) {
-		std::cout << "Failed to init OSPRay\n";
-		return 3;
+	ospLoadModule("ispc");
+	if (ospLoadModule("mpi") != OSP_NO_ERROR) {
+		std::cout << "Failed to load MPI module\n";
+		return 1;
 	}
 
-	//ospLoadModule("mpi");
+	OSPDevice device = ospNewDevice("mpi_distributed");
+	ospDeviceCommit(device);
+	ospSetCurrentDevice(device);
 
 	const char* glsl_version = "#version 330 core";
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
@@ -104,6 +110,8 @@ int main(int argc, const char **argv) {
 	std::vector<std::string> args(argv, argv + argc);
 
 	run_app(args, window);
+
+	ospShutdown();
 
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplSDL2_Shutdown();
@@ -163,11 +171,9 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 			OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 
 	OSPModel world = ospNewModel();
-	OSPCamera ospcamera = ospNewCamera("perspective");
-	OSPRenderer renderer = ospNewRenderer("ao");
-	ospSet1i(renderer, "aoSamples", 1);
-	ospSetObject(renderer, "model", world);
-	ospSetObject(renderer, "camera", ospcamera);
+	ospSet1i(world, "id", 0);
+	ospSet3f(world, "region.lower", -1.f, -1.f, 0.f);
+	ospSet3f(world, "region.upper", 1.f, 1.f, 3.5f);
 
 	float vertex[] = { -1.0f, -1.0f, 3.0f, 0.f,
 		-1.0f,  1.0f, 3.0f, 0.f,
@@ -198,7 +204,13 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 
 	ospAddGeometry(world, mesh);
 	ospCommit(world);
-	ospCommit(renderer);
+
+	OSPCamera ospcamera = ospNewCamera("perspective");
+	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
+	ospSetObject(renderer, "model", world);
+	ospSetObject(renderer, "camera", ospcamera);
+	// Note: we commit for the first time in the render loop as well
+	// b/c we mark the camera as changed
 
 	size_t frame_id = 0;
 	glm::vec2 prev_mouse(-2.f);
@@ -266,6 +278,8 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
 				ospSet1f(ospcamera, "aspect", static_cast<float>(win_width) / win_height);
+				ospCommit(ospcamera);
+				ospCommit(renderer);
 
 				ospRelease(fb);
 				fb = ospNewFrameBuffer(osp::vec2i{win_width, win_height},
@@ -275,7 +289,6 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 
 		if (data_changed || camera_changed) {
 			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
-			ospCommit(renderer);
 
 			auto eye = camera.eye();
 			auto dir = camera.dir();
@@ -284,7 +297,9 @@ void run_app(const std::vector<std::string> &args, SDL_Window *window) {
 			ospSet3fv(ospcamera, "dir", &dir.x);
 			ospSet3fv(ospcamera, "up", &up.x);
 			ospSet1f(ospcamera, "fovy", 65.f);
+			ospSet1f(ospcamera, "aspect", static_cast<float>(win_width) / win_height);
 			ospCommit(ospcamera);
+			ospCommit(renderer);
 		}
 
 		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
