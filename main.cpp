@@ -14,7 +14,7 @@
 #include "util.h"
 
 const std::string fullscreen_quad_vs = R"(
-#version 450 core
+#version 330 core
 
 const vec4 pos[4] = vec4[4](
 	vec4(-1, 1, 0.5, 1),
@@ -29,9 +29,9 @@ void main(void){
 )";
 
 const std::string display_texture_fs = R"(
-#version 450 core
+#version 330 core
 
-layout(binding=0) uniform sampler2D img;
+uniform sampler2D img;
 
 out vec4 color;
 
@@ -70,9 +70,8 @@ int main(int argc, const char **argv) {
 	const char* glsl_version = "#version 330 core";
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
 
 	// Create window with graphics context
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
