@@ -353,7 +353,7 @@ void run_viewer(const std::vector<std::string> &args) {
 		camera_changed = false;
 		data_changed = false;
 
-#if 0
+#if 1
 		data_changed = true;
 		regions = is::client::query();
 		OSPModel newworld = build_regions(regions, tfcn);
@@ -435,7 +435,7 @@ void run_worker(const std::vector<std::string>&) {
 
 		++frame_id;
 
-#if 0
+#if 1
 		data_changed = true;
 		regions = is::client::query();
 		OSPModel newworld = build_regions(regions, tfcn);
