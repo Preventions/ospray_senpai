@@ -462,6 +462,7 @@ void run_worker(const std::vector<std::string>&) {
 		ospRenderFrame(fb, renderer, OSP_FB_COLOR);
 
 		++frame_id;
+		data_changed = false;
 	}
 }
 OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn) {
