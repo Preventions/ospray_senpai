@@ -296,7 +296,15 @@ void run_viewer(const std::vector<std::string> &args) {
 			}
 		}
 
+		int ready = 0;
 		if (region_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+			ready = 1;
+		}
+
+		int all_new_state = 0;
+		MPI_Allreduce(&ready, &all_new_state, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+
+		if (all_new_state) {
 			data_changed = true;
 			regions = region_future.get();
 			OSPModel newworld = build_regions(regions, tfcn);
@@ -416,7 +424,15 @@ void run_worker(const std::vector<std::string>&) {
 	glm::vec2 prev_mouse(-2.f);
 	bool data_changed = false;
 	while (!app_state.done) {
+		int ready = 0;
 		if (region_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+			ready = 1;
+		}
+
+		int all_new_state = 0;
+		MPI_Allreduce(&ready, &all_new_state, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+
+		if (all_new_state) {
 			data_changed = true;
 			regions = region_future.get();
 			OSPModel newworld = build_regions(regions, tfcn);
