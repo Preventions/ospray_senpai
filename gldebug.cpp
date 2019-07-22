@@ -17,6 +17,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cassert>
+#include <stdexcept>
 #include <GL/gl3w.h>
 #include "gldebug.h"
 
