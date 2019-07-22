@@ -1,4 +1,6 @@
 #include <iostream>
+#include <algorithm>
+#include <random>
 #include <memory>
 #include <vector>
 #include <array>
@@ -46,8 +48,10 @@ int win_width = 1280;
 int win_height = 720;
 int rank = -1;
 int world_size = -1;
+float sphereRadius = 0.01;
 std::string display_field;
 glm::vec2 value_range(0.f, 1.f);
+glm::vec3 lightdir(-0.5f, -1.f, -0.5f);
 
 struct AppState {
 	glm::vec3 cam_pos, cam_dir, cam_up;
@@ -60,7 +64,7 @@ struct AppState {
 
 void run_viewer(const std::vector<std::string> &args);
 void run_worker(const std::vector<std::string> &args);
-OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn);
+OSPData build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn);
 void log_regions(const std::vector<is::SimState> &regions);
 void update_transfer_fcn(OSPTransferFunction tfcn, const std::vector<uint8_t> &colormap);
 
@@ -110,6 +114,8 @@ int main(int argc, const char **argv) {
 		} else if (args[i] == "-range") {
 			value_range.x = std::stof(args[++i]);
 			value_range.y = std::stof(args[++i]);
+		} else if (args[i] == "-radius") {
+			sphereRadius = std::stof(args[++i]);
 		}
 	}
 
@@ -214,15 +220,28 @@ void run_viewer(const std::vector<std::string> &args) {
 	// Query the first timestep from the simulation
 	auto regions = is::client::query();
 	log_regions(regions);
-	OSPModel world = build_regions(regions, tfcn);
+	OSPData models = build_regions(regions, tfcn);
 
 	// Start querying for the next timestep asynchronously
 	auto region_future = is::client::query_async();
 
+	OSPLight dirLight = ospNewLight3("distant");
+	ospSet3fv(dirLight, "direction", &lightdir.x);
+	ospCommit(dirLight);
+
+	OSPLight ambientLight = ospNewLight3("ambient");
+	ospSet1f(ambientLight, "intensity", 0.2);
+	ospCommit(ambientLight);
+
+	std::array<OSPLight, 2> lightList = {dirLight, ambientLight};
+	OSPData lights = ospNewData(lightList.size(), OSP_OBJECT, lightList.data());
+	ospCommit(lights);
+
 	OSPCamera ospcamera = ospNewCamera("perspective");
 	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
-	ospSetObject(renderer, "model", world);
+	ospSetObject(renderer, "model", models);
 	ospSetObject(renderer, "camera", ospcamera);
+	ospSetObject(renderer, "lights", lights);
 	// Note: we commit for the first time in the render loop as well
 	// b/c we mark the camera as changed
 
@@ -307,8 +326,8 @@ void run_viewer(const std::vector<std::string> &args) {
 		if (all_new_state) {
 			data_changed = true;
 			regions = region_future.get();
-			OSPModel newworld = build_regions(regions, tfcn);
-			ospSetObject(renderer, "model", newworld);
+			OSPData models = build_regions(regions, tfcn);
+			ospSetObject(renderer, "model", models);
 			ospCommit(renderer);
 			// TODO: Releasing the world here shouldn't segfault
 			//ospRelease(world);
@@ -407,15 +426,28 @@ void run_worker(const std::vector<std::string>&) {
 	// Query the first timestep from the simulation
 	auto regions = is::client::query();
 	log_regions(regions);
-	OSPModel world = build_regions(regions, tfcn);
+	OSPData models = build_regions(regions, tfcn);
 
 	// Start querying for the next timestep asynchronously
 	auto region_future = is::client::query_async();
 
+	OSPLight dirLight = ospNewLight3("distant");
+	ospSet3fv(dirLight, "direction", &lightdir.x);
+	ospCommit(dirLight);
+
+	OSPLight ambientLight = ospNewLight3("ambient");
+	ospSet1f(ambientLight, "intensity", 0.2);
+	ospCommit(ambientLight);
+
+	std::array<OSPLight, 2> lightList = {dirLight, ambientLight};
+	OSPData lights = ospNewData(lightList.size(), OSP_OBJECT, lightList.data());
+	ospCommit(lights);
+
 	OSPCamera ospcamera = ospNewCamera("perspective");
 	OSPRenderer renderer = ospNewRenderer("mpi_raycast");
-	ospSetObject(renderer, "model", world);
+	ospSetObject(renderer, "model", models);
 	ospSetObject(renderer, "camera", ospcamera);
+	ospSetObject(renderer, "lights", lights);
 	// Note: we commit for the first time in the render loop as well
 	// b/c we mark the camera as changed
 
@@ -435,8 +467,8 @@ void run_worker(const std::vector<std::string>&) {
 		if (all_new_state) {
 			data_changed = true;
 			regions = region_future.get();
-			OSPModel newworld = build_regions(regions, tfcn);
-			ospSetObject(renderer, "model", newworld);
+			OSPData models = build_regions(regions, tfcn);
+			ospSetObject(renderer, "model", models);
 			ospCommit(renderer);
 			// TODO: Releasing the world here shouldn't segfault
 			//ospRelease(world);
@@ -481,68 +513,105 @@ void run_worker(const std::vector<std::string>&) {
 		data_changed = false;
 	}
 }
-OSPModel build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn) {
-	OSPModel world = ospNewModel();
-	if (regions.size() > 1) {
-		std::cout << "WARNING: Multiple regions per-rank are not handled right now\n";
-	}
-	auto region = regions[0];
-	ospSet1i(world, "id", rank);
-	ospSet3fv(world, "region.lower", &region.local.min.x);
-	ospSet3fv(world, "region.upper", &region.local.max.x);
+OSPData build_regions(const std::vector<is::SimState> &regions, OSPTransferFunction tfcn) {
+	struct Particle {
+		float x, y, z;
+		int type;
+	};
 
-	if (region.particles.numParticles > 0) {
-		OSPData data = ospNewData(region.particles.array->numBytes(),
-				OSP_UCHAR, region.particles.array->data(),
-				OSP_DATA_SHARED_BUFFER);
-		ospCommit(data);
-
-		OSPGeometry spheres = ospNewGeometry("spheres");
-		ospSetData(spheres, "spheres", data);
-		ospSet1i(spheres, "bytes_per_sphere", region.particles.array->stride());
-		
-		OSPMaterial mat = ospNewMaterial2("scivis", "OBJMaterial");
-		ospSet3f(mat, "Kd", 1.f, 1.f, 1.f / rank);
-		ospCommit(mat);
-		ospSetMaterial(spheres, mat);
-
-		ospCommit(spheres);
-		ospAddGeometry(world, spheres);
+	int maxType = 1;
+	for (const auto &region : regions) {
+		const auto &p = region.particles;
+		auto maxElem =
+			std::max_element(reinterpret_cast<Particle*>(p.array->data()),
+				reinterpret_cast<Particle*>(p.array->data()) + p.numParticles,
+				[](const Particle &a, const Particle &b) { return a.type < b.type; });
+		maxType = maxElem->type;
 	}
 
-	for (const auto &f : region.fields) {
-		if (f.first != display_field) {
-			continue;
+	int globalMaxType = maxType;
+	MPI_Allreduce(&maxType, &globalMaxType, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+	// Generate some random colors for the particles
+	std::vector<glm::vec3> colors(size_t(maxType + 1), glm::vec3(1));
+	std::mt19937 rng;
+	// Same seed to have the same colors across ranks
+	rng.seed(0);
+	std::uniform_real_distribution<float> distrib;
+	for (auto &c : colors) {
+		c.x = distrib(rng);
+		c.y = distrib(rng);
+		c.z = distrib(rng);
+	}
+
+	OSPData colorData = ospNewData(colors.size(), OSP_FLOAT3, colors.data());
+	ospCommit(colorData);
+
+	std::vector<OSPModel> models;
+	for (const auto &region : regions) {
+		OSPModel world = ospNewModel();
+		ospSet1i(world, "id", region.simRank);
+		ospSet3fv(world, "region.lower", &region.local.min.x);
+		ospSet3fv(world, "region.upper", &region.local.max.x);
+
+		if (region.particles.numParticles > 0) {
+			OSPData data = ospNewData(region.particles.array->numBytes(),
+					OSP_UCHAR, region.particles.array->data(),
+					OSP_DATA_SHARED_BUFFER);
+			ospCommit(data);
+
+			OSPGeometry spheres = ospNewGeometry("spheres");
+			ospSetData(spheres, "spheres", data);
+			ospSet1i(spheres, "bytes_per_sphere", region.particles.array->stride());
+			ospSet1f(spheres, "radius", sphereRadius);
+			ospSetData(spheres, "color", colorData);
+			ospSet1i(spheres, "offset_colorID", sizeof(glm::vec3));
+
+			OSPMaterial mat = ospNewMaterial2("scivis", "OBJMaterial");
+			ospSet3f(mat, "Kd", 1.f, 1.f, 1.f);
+			ospSet1f(mat, "d", 1.f);
+			ospCommit(mat);
+			ospSetMaterial(spheres, mat);
+
+			ospCommit(spheres);
+			ospAddGeometry(world, spheres);
 		}
 
-		auto &field = f.second;
-		OSPVolume vol = ospNewVolume("shared_structured_volume");
-		ospSet3i(vol, "dimensions", field.dims[0], field.dims[1], field.dims[2]);
-		switch (field.dataType) {
-			case UINT8: ospSetString(vol, "voxelType", "uchar"); break;
-			case FLOAT: ospSetString(vol, "voxelType", "float"); break;
-			case DOUBLE: ospSetString(vol, "voxelType", "double"); break;
-			default: throw std::runtime_error("Invalid voxel type");
+		for (const auto &f : region.fields) {
+			if (f.first != display_field) {
+				continue;
+			}
+
+			auto &field = f.second;
+			OSPVolume vol = ospNewVolume("shared_structured_volume");
+			ospSet3i(vol, "dimensions", field.dims[0], field.dims[1], field.dims[2]);
+			switch (field.dataType) {
+				case UINT8: ospSetString(vol, "voxelType", "uchar"); break;
+				case FLOAT: ospSetString(vol, "voxelType", "float"); break;
+				case DOUBLE: ospSetString(vol, "voxelType", "double"); break;
+				default: throw std::runtime_error("Invalid voxel type");
+			}
+
+			OSPData vol_data = ospNewData(field.array->numBytes(), OSP_UCHAR,
+					field.array->data(), OSP_DATA_SHARED_BUFFER);
+			ospCommit(vol_data);
+			ospSetData(vol, "voxelData", vol_data);
+			ospSet1f(vol, "samplingRate", 1.f);
+			ospSet1i(vol, "adaptiveSampling", 0);
+
+			ospSetObject(vol, "transferFunction", tfcn);
+			ospCommit(vol);
+			ospAddVolume(world, vol);
 		}
 
-		OSPData vol_data = ospNewData(field.array->numBytes(), OSP_UCHAR,
-				field.array->data(), OSP_DATA_SHARED_BUFFER);
-		ospCommit(vol_data);
-		ospSetData(vol, "voxelData", vol_data);
-		ospSet1f(vol, "samplingRate", 1.f);
-		ospSet1i(vol, "adaptiveSampling", 0);
-
-		ospSetObject(vol, "transferFunction", tfcn);
-		ospCommit(vol);
-		ospAddVolume(world, vol);
+		ospCommit(world);
+		models.push_back(world);
 	}
-
-	ospCommit(world);
-	return world;
+	return ospNewData(models.size(), OSP_OBJECT, models.data());
 }
 void log_regions(const std::vector<is::SimState> &regions) {
 	for (int i = 0; i < world_size; ++i) {
-		if (rank == 0) {
+		if (rank == i) {
 			std::cout << "Rank " << rank << " has " << regions.size() << " regions\n";
 			// For each region we received, print out its data
 			for (const auto &r : regions) {
