@@ -31,7 +31,7 @@
 #include "ospray/ospray_cpp/Renderer.h"
 #include "ospray/ospray_cpp/TransferFunction.h"
 #include "ospray/ospray_cpp/Model.h"
-#include "libIS/is_render.h"
+#include "libIS/is_client.h"
 #include "colormap.h"
 #include "util.h"
 #include "image_util.h"
@@ -168,11 +168,11 @@ void run_renderer() {
 	Model model;
 
 	if (mpi_multilaunch) {
-		std::cout << "Connecting with existing comm for renderer" << std::endl;
-		is::render::connectWithExisting(worker_comm, MPI_COMM_WORLD);
+		std::cout << "MPI multi-launch is not supported\n";
+		std::exit(1);
 	} else {
 		std::cout << "Connecting over the network to the simulation" << std::endl;
-		is::render::connect(sim_host, sim_port, MPI_COMM_WORLD);
+		is::client::connect(sim_host, sim_port, MPI_COMM_WORLD);
 	}
 
 	const bool benchmarking = !benchmark_log_file.empty();
@@ -331,6 +331,6 @@ void run_renderer() {
 
 	benchmark_out = nullptr;
 	query_task = nullptr;
-	is::render::disconnect();
+	is::client::disconnect();
 }
 
