@@ -526,7 +526,7 @@ OSPData build_regions(const std::vector<is::SimState> &regions, OSPTransferFunct
 			std::max_element(reinterpret_cast<Particle*>(p.array->data()),
 				reinterpret_cast<Particle*>(p.array->data()) + p.numParticles,
 				[](const Particle &a, const Particle &b) { return a.type < b.type; });
-		maxType = maxElem->type;
+		maxType = std::max(maxType, maxElem->type);
 	}
 
 	int globalMaxType = maxType;
