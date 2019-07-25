@@ -223,7 +223,7 @@ void run_viewer(const std::vector<std::string> &args) {
 	OSPData models = build_regions(regions, tfcn);
 
 	// Start querying for the next timestep asynchronously
-	auto region_future = is::client::query_async();
+	auto region_future = is::client::queryAsync();
 
 	OSPLight dirLight = ospNewLight3("distant");
 	ospSet3fv(dirLight, "direction", &lightdir.x);
@@ -332,7 +332,7 @@ void run_viewer(const std::vector<std::string> &args) {
 			// TODO: Releasing the world here shouldn't segfault
 			//ospRelease(world);
 		
-			region_future = is::client::query_async();
+			region_future = is::client::queryAsync();
 		}
 
 		app_state.cam_pos = camera.eye();
@@ -429,7 +429,7 @@ void run_worker(const std::vector<std::string>&) {
 	OSPData models = build_regions(regions, tfcn);
 
 	// Start querying for the next timestep asynchronously
-	auto region_future = is::client::query_async();
+	auto region_future = is::client::queryAsync();
 
 	OSPLight dirLight = ospNewLight3("distant");
 	ospSet3fv(dirLight, "direction", &lightdir.x);
@@ -473,7 +473,7 @@ void run_worker(const std::vector<std::string>&) {
 			// TODO: Releasing the world here shouldn't segfault
 			//ospRelease(world);
 		
-			region_future = is::client::query_async();
+			region_future = is::client::queryAsync();
 		}
 
 		MPI_Bcast(&app_state, sizeof(app_state), MPI_BYTE, 0, MPI_COMM_WORLD);
