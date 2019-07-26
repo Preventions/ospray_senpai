@@ -522,6 +522,10 @@ OSPData build_regions(const std::vector<is::SimState> &regions, OSPTransferFunct
 	int maxType = 1;
 	for (const auto &region : regions) {
 		const auto &p = region.particles;
+		if (p.numParticles == 0) {
+			continue;
+		}
+
 		auto maxElem =
 			std::max_element(reinterpret_cast<Particle*>(p.array->data()),
 				reinterpret_cast<Particle*>(p.array->data()) + p.numParticles,
