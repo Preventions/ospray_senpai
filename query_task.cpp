@@ -91,6 +91,10 @@ void QueryTask::queryThread() {
 		struct ISSphere { vec3f pos; int type; };
 		// Transform the particles so we can give them radii based on the atom type
 		for (auto &r : state->regions) {
+            if (r.particles.numParticles == 0) {
+                std::cout << "Warning: No particles found in region?\n";
+                continue;
+            }
 			auto new_spheres = std::make_shared<is::OwnedArray>(sizeof(Sphere) * r.particles.array->size(),
 					sizeof(Sphere));
 
