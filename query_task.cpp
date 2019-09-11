@@ -78,10 +78,15 @@ std::shared_ptr<SimulationState> QueryTask::take() {
 void QueryTask::queryThread() {
 	do {
 		std::shared_ptr<SimulationState> state = std::make_shared<SimulationState>();
-		state->regions = is::client::query();
+        bool simDisconnected = false;
+		state->regions = is::client::query(&simDisconnected);
 		if (quitThread) {
 			break;
 		}
+        if (!is::client::sim_connected()) {
+            std::cout << "Simulation disconnected, quitting\n";
+            std::exit(0);
+        }
 
 		struct ISSphere { vec3f pos; int type; };
 		// Transform the particles so we can give them radii based on the atom type
