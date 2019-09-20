@@ -119,6 +119,10 @@ void QueryTask::queryThread() {
 		// driver doesn't send this right now
 		box3f local_bounds;
 		for (const auto &r : state->regions) {
+            if (r.particles.numParticles == 0) {
+                std::cout << "Warning: No particles found in region?\n";
+                continue;
+            }
 			const vec3f region_lower = vec3f(r.local.min.x, r.local.min.y, r.local.min.z) - vec3f(radius); 
 			const vec3f region_upper = vec3f(r.local.max.x, r.local.max.y, r.local.max.z) + vec3f(radius);
 
@@ -165,6 +169,10 @@ std::vector<vec4f> QueryTask::colormap_atoms(std::vector<is::SimState> &regions,
 	atom_type_range[1] = std::numeric_limits<int>::min();
 
 	for (const auto &region : regions) {
+        if (region.particles.numParticles == 0) {
+            std::cout << "Warning: No particles found in region?\n";
+            continue;
+        }
 		const Sphere *atoms = reinterpret_cast<const Sphere*>(region.particles.array->data());
 		// TODO: We need to do a reduction to compute the global min/mix ids and generate
 		// colors for the unique atom types
@@ -183,6 +191,10 @@ std::vector<vec4f> QueryTask::colormap_atoms(std::vector<is::SimState> &regions,
 
 	if (atom_type_range[0] != 0) {
 		for (auto &region : regions) {
+            if (region.particles.numParticles == 0) {
+                std::cout << "Warning: No particles found in region?\n";
+                continue;
+            }
 			Sphere *atoms = reinterpret_cast<Sphere*>(region.particles.array->data());
 			const size_t n_atoms = region.particles.numParticles + region.particles.numGhost;
 			for (size_t i = 0; i < n_atoms; ++i) {

@@ -129,7 +129,8 @@ int main(int argc, char **argv) {
 
 	MPI_Comm_free(&worker_comm);
 	MPI_Comm_free(&ospray_comm);
-	MPI_Finalize();
+    // TODO: Seems like somethign on comm world isn't matched? finalize shouldn't hang
+    //MPI_Finalize();
 	return 0;
 }
 void run_renderer() {
