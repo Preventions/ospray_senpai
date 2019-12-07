@@ -319,6 +319,10 @@ void run_viewer(const std::vector<std::string> &args) {
 			}
 		}
 
+        if (!is::client::sim_connected()) {
+            app_state.done = true;
+        }
+
 		int ready = 0;
 		if (region_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
 			ready = 1;
