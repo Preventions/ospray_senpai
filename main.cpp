@@ -220,6 +220,10 @@ void run_viewer(const std::vector<std::string> &args) {
 	// Query the first timestep from the simulation
 	auto regions = is::client::query();
 	log_regions(regions);
+    if (display_field.empty() && !regions.empty() && !regions[0].fields.empty()) {
+        display_field = regions[0].fields.begin()->first;
+        std::cout << "No -field specified, defaulting to " << display_field << "\n";
+    }
 	OSPData models = build_regions(regions, tfcn);
 
 	// Start querying for the next timestep asynchronously
