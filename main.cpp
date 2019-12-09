@@ -670,7 +670,6 @@ void update_transfer_fcn(OSPTransferFunction tfcn, const std::vector<uint8_t> &c
 	OSPData opacity_data = ospNewData(opacities.size(), OSP_FLOAT, opacities.data());
 	ospCommit(opacity_data);
 
-	//The value range here will be different from Will's code. It will need to match Timo's data.
 	ospSetData(tfcn, "colors", colors_data);
 	ospSetData(tfcn, "opacities", opacity_data);
 	ospSet2f(tfcn, "valueRange", value_range.x, value_range.y);
