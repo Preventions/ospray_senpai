@@ -14,6 +14,7 @@
 #include "imgui_impl_opengl3.h"
 #include "arcball_camera.h"
 #include "shader.h"
+#include "stb_image_write.h"
 #include "util.h"
 #include "transfer_function_widget.h"
 
@@ -175,6 +176,8 @@ void run_viewer(const std::vector<std::string> &args) {
 	glm::vec3 eye(0, 0, 5);
 	glm::vec3 center(0);
 	glm::vec3 up(0, 1, 0);
+    std::string img_output;
+    bool save_data_change_only = false;
 	for (size_t i = 1; i < args.size(); ++i) {
 		if (args[i] == "-eye") {
 			eye.x = std::stof(args[++i]);
@@ -188,7 +191,11 @@ void run_viewer(const std::vector<std::string> &args) {
 			up.x = std::stof(args[++i]);
 			up.y = std::stof(args[++i]);
 			up.z = std::stof(args[++i]);
-		}
+		} else if (args[i] == "-o") {
+            img_output = args[++i];
+        } else if (args[i] == "-data-frames") {
+            save_data_change_only = true;
+        }
 	}
 
 	ArcballCamera camera(eye, center, up);
@@ -246,13 +253,11 @@ void run_viewer(const std::vector<std::string> &args) {
 	ospSetObject(renderer, "model", models);
 	ospSetObject(renderer, "camera", ospcamera);
 	ospSetObject(renderer, "lights", lights);
-	// Note: we commit for the first time in the render loop as well
-	// b/c we mark the camera as changed
 
 	TransferFunctionWidget widget;
-
 	AppState app_state;
 	size_t frame_id = 0;
+    size_t data_frame_id = 0;
 	glm::vec2 prev_mouse(-2.f);
 	bool camera_changed = true;
 	bool fbsize_changed = false;
@@ -333,6 +338,7 @@ void run_viewer(const std::vector<std::string> &args) {
 
 		if (all_new_state) {
 			data_changed = true;
+            ++data_frame_id;
 			regions = region_future.get();
 			OSPData models = build_regions(regions, tfcn);
 			ospSetObject(renderer, "model", models);
@@ -376,7 +382,9 @@ void run_viewer(const std::vector<std::string> &args) {
 			ospCommit(ospcamera);
 			ospCommit(renderer);
 		}
-		if (data_changed || camera_changed || fbsize_changed) {
+		if (data_changed || app_state.camera_changed || app_state.fbsize_changed
+            || app_state.tfcn_changed)
+        {
 			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
 		}
 
@@ -399,6 +407,18 @@ void run_viewer(const std::vector<std::string> &args) {
 			const uint32_t *mapped = static_cast<const uint32_t*>(ospMapFrameBuffer(fb, OSP_FB_COLOR));
 			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, win_width, win_height, GL_RGBA,
 					GL_UNSIGNED_BYTE, mapped);
+
+            if (!img_output.empty()) {
+                std::string output_file = img_output;
+                if (save_data_change_only) {
+                    output_file += "-df" + std::to_string(data_frame_id);
+                } else {
+                    output_file += "-f" + std::to_string(frame_id)
+                        + "-df" + std::to_string(data_frame_id);
+                }
+                output_file += ".jpg";
+                stbi_write_jpg(output_file.c_str(), win_width, win_height, 4, mapped, 90);
+            }
 			ospUnmapFrameBuffer(mapped, fb);
 		}
 
@@ -434,6 +454,10 @@ void run_worker(const std::vector<std::string>&) {
 	// Query the first timestep from the simulation
 	auto regions = is::client::query();
 	log_regions(regions);
+    if (display_field.empty() && !regions.empty() && !regions[0].fields.empty()) {
+        display_field = regions[0].fields.begin()->first;
+        std::cout << "No -field specified, defaulting to " << display_field << "\n";
+    }
 	OSPData models = build_regions(regions, tfcn);
 
 	// Start querying for the next timestep asynchronously
@@ -456,8 +480,6 @@ void run_worker(const std::vector<std::string>&) {
 	ospSetObject(renderer, "model", models);
 	ospSetObject(renderer, "camera", ospcamera);
 	ospSetObject(renderer, "lights", lights);
-	// Note: we commit for the first time in the render loop as well
-	// b/c we mark the camera as changed
 
 	AppState app_state;
 	size_t frame_id = 0;
@@ -511,7 +533,9 @@ void run_worker(const std::vector<std::string>&) {
 			ospCommit(ospcamera);
 			ospCommit(renderer);
 		}
-		if (data_changed || app_state.camera_changed || app_state.fbsize_changed) {
+		if (data_changed || app_state.camera_changed || app_state.fbsize_changed
+            || app_state.tfcn_changed)
+        {
 			ospFrameBufferClear(fb, OSP_FB_COLOR | OSP_FB_ACCUM);
 		}
 
